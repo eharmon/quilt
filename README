@@ -1,0 +1,28 @@
+Quilt.
+=====
+
+Quilt is a tiling program designed to generate images which can be displayed on the web with OpenLayers or Google Maps. Unlike other tilers, Quilt is designed to work with very large input images, which themselves are tiled. Using this method Quilt can generate tiles for very large images without high memory consumption. For instance, for an image ~60,000px x 60,000px at full scale which has been subdivided into 25 images, Quilt never consumes more than 1GB of memory. In this way very large inputs can be processed without massive memory demands.
+
+Requirements
+============
+
+Quilt uses Python, specifically the (generally included) modules: sys, os, math, argparse, json.
+
+Additionally Quilt requires PIL: http://www.pythonware.com/products/pil/
+
+Usage
+=====
+
+Quilt takes an input configuration file (example included) which defines the source images and their positions within the image landscape. This is combined with the destination, an output location where the tiles and metadata should be placed.
+
+This metadata is encoded in JSON which can be picked up by your OpenLayers or Google Maps wrapper code to configure display on the fly.
+
+Specific input details can be found in the usage:
+./quilt.py -h
+
+Copyright
+=========
+
+Copyright (C) 2012 Eric Harmon
+
+Licensed under the terms of the GNU GPL, version 3
