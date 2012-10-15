@@ -189,7 +189,8 @@ def tile(tilesize, imagelist, prefix, debug, crop):
 
         for image in imagelist:
             print "Loading image %s" % image[1]
-            im = Image.open(image[1])
+            # Convert to RGB 
+            im = Image.open(image[1]).convert('RGB')
             if(crop):
                 im = im.crop((crop[0], crop[1], crop[2], crop[3]))
             if(debug):
