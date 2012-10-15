@@ -20,6 +20,11 @@ This metadata is encoded in JSON which can be picked up by your OpenLayers or Go
 Specific input details can be found in the usage:
 ./quilt.py -h
 
+Examples
+========
+
+In the examples directory you will find a sample HTML page for presenting these tiles on the web using OpenLayers. If you upload this example onto a webserver alongside your tiles in the directory with map_configuration.json, your generated tiles should be easily accesible on the internet.
+
 Copyright
 =========
 
