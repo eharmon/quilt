@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 """
 
@@ -6,7 +6,7 @@ Quilt.
 
 Image tiler for OpenLayers and Google Maps designed for large input sets
 
-Copyright (C) 2012 Eric Harmon
+Copyright (C) 2012, 2017 Eric Harmon
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -23,22 +23,34 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 """
 
-from PIL import Image
-import sys
-import os
-import math
+from __future__ import print_function
+
 import argparse
 import json
+import logging
+import math
+import os
+import sys
 
-def tile(tilesize, imagelist, prefix, debug, crop):
+from concurrent import futures
+from PIL import Image
+import yaml
+
+
+# Disable decompression bomb warnings, we know we're working with large images
+Image.MAX_IMAGE_PIXELS = 1000000000
+logging.basicConfig(format='%(message)s', level=logging.INFO)
+LOGGER = logging.getLogger(__name__)
+
+def tile(tilesize, config, prefix, debug, crop):
     """Generate a list of tiles given a list of images and metadata"""
 
-    print "Generating %d sized tiles to %s from %d images" % (tilesize, prefix, len(imagelist))
+    LOGGER.info("Generating %d sized tiles to %s from %d images", tilesize, prefix, len(config['images']))
 
-    print "Determining overall landscape size..."
+    LOGGER.info("Determining overall landscape size...")
 
     # Let's calculate the size of our full image scape
-    im = Image.open(imagelist[0][1])
+    im = Image.open(config['images'][0]['file'])
     if(crop):
         im = im.crop((crop[0], crop[1], crop[2], crop[3]))
     size = im.size
@@ -49,37 +61,32 @@ def tile(tilesize, imagelist, prefix, debug, crop):
     full_x_size = size[0]
     full_y_size = size[1]
 
-    # Find how many times we move across the scape and do some trickery to reduce that
-    # Add ones for the first image
-    y_moves = len(filter(lambda x: x[0] == 'd', imagelist))
-    # A y move is also an x move, add both together (note that a single image tile should simply have a 'd' command
-    x_moves = len(filter(lambda x: x[0] == 'r', imagelist)) + y_moves
-    x_full_landscape = int(size[0] * (1.0 * x_moves / y_moves))
-    y_full_landscape = size[1] * y_moves
+    x_full_landscape = config['width'] * full_x_size
+    y_full_landscape = config['height'] * full_y_size
 
-    print "Total landscape size: %d x %d" % (x_full_landscape, y_full_landscape)
+    LOGGER.info("Total landscape size: %d x %d", x_full_landscape, y_full_landscape)
 
     square_full_landscape = x_full_landscape if x_full_landscape > y_full_landscape else y_full_landscape
 
-    print "Square landscape size: %d x %d" % (square_full_landscape, square_full_landscape)
+    LOGGER.info("Square landscape size: %d x %d", square_full_landscape, square_full_landscape)
 
-    print "Determining maximum zoom level..."
+    LOGGER.info("Determining maximum zoom level...")
 
     # Essentially zoom levels are 2^(zoom level) tiles per side. This means we need to see what the closest power of 2 to the number of tiles we need is.
     estimated_tiles_per_side = square_full_landscape / tilesize
     # Reverse the power of 2 with a log
     max_zoom = int(math.ceil(math.log(estimated_tiles_per_side, 2)))
 
-    print "Maximum zoom level is %d" % max_zoom
+    LOGGER.info("Maximum zoom level is %d", max_zoom)
 
-    print "Pregenerating source image tilemap..."
+    LOGGER.info("Pregenerating source image tilemap...")
 
-    print "Determining start offsets..."
+    LOGGER.info("Determining start offsets...")
 
     xoffset = (1.0 * square_full_landscape - x_full_landscape) / 2
     yoffset = (1.0 * square_full_landscape - y_full_landscape) / 2
 
-    print "Offsets %d x %d" % (xoffset, yoffset)
+    LOGGER.info("Offsets %d x %d", xoffset, yoffset)
 
     # Subtacting 1 from max_zoom and computing a scale factor to offset since we're disallowing maximum zoom currently
     # TODO: Need to figure out how to more properly feed this data to openLayers
@@ -91,71 +98,79 @@ def tile(tilesize, imagelist, prefix, debug, crop):
     write_settings(max_zoom - 1, square_full_landscape * scale_factor, prefix)
 
     # This should be max_zoom + 1, disabled temporarily since the images are too huge
-    for zoom in range(0, max_zoom):
+    for zoom in range(6, max_zoom):
 #    for zoom in range(0, 2):
 
-        print "\n\nGenerating zoom level %d" % zoom
+        LOGGER.info("Generating zoom level %d", zoom)
 
         tiles_per_side_for_zoom = math.pow(2, zoom)
         tiles_for_zoom = tiles_per_side_for_zoom * tiles_per_side_for_zoom
         square_for_zoom = tiles_per_side_for_zoom * tilesize
 
-        print "Will generate %d tiles at landscape size %d x %d" % (tiles_for_zoom, square_for_zoom, square_for_zoom)
+        LOGGER.info("\tWill generate %d tile(s) at landscape size %d x %d", tiles_for_zoom, square_for_zoom, square_for_zoom)
 
-        print "Determining zoomed landscape size..."
+        LOGGER.info("\tDetermining zoomed landscape size...")
 
         scale_factor = (square_for_zoom / square_full_landscape)
 
         zoom_landscape_size_x = scale_factor * x_full_landscape
         zoom_landscape_size_y = scale_factor * y_full_landscape
 
-        print "Zoomed landscape size: %d x %d" % (zoom_landscape_size_x, zoom_landscape_size_y)
+        LOGGER.info("\tZoomed landscape size: %d x %d", zoom_landscape_size_x, zoom_landscape_size_y)
 
         zoom_xoffset = scale_factor * xoffset
         zoom_yoffset = scale_factor * yoffset
 
-        print "Zoomed offsets %d x %d" % (zoom_xoffset, zoom_yoffset)
+        LOGGER.info("\tZoomed offsets: %d x %d", zoom_xoffset, zoom_yoffset)
 
         zoom_x_size = scale_factor * full_x_size
         zoom_y_size = scale_factor * full_y_size
 
-        print "Generating input file tilemap"
+        LOGGER.info("\tGenerating input file tilemap")
 
         input_tilemap = []
 
         x = zoom_xoffset
         y = zoom_yoffset
 
-        for image in imagelist:
+        current_x_count = 0
+        for image in config['images']:
             # Append the bounding box
-            input_tilemap.append([image[1], x, y, x + zoom_x_size, y + zoom_y_size])
-            print "Laid out image %s at bounding box (%d, %d -> %d, %d)" % (image[1], x, y, x + zoom_x_size, y + zoom_y_size)
-            direction = image[0]
-            if direction == 'r':
-                x += zoom_x_size
-            if direction == 'd':
+            input_tilemap.append([image['name'], x, y, x + zoom_x_size, y + zoom_y_size])
+            LOGGER.debug("\t\tLaid out image '%s' at bounding box (%d, %d -> %d, %d)", image['name'], x, y, x + zoom_x_size, y + zoom_y_size)
+            x += zoom_x_size
+            current_x_count += 1
+            if current_x_count == config['width']:
+                current_x_count = 0
                 y += zoom_y_size
-                # Don't forget to "carriage return" after a down shift
                 x = zoom_xoffset
 
-        print "Generating output file tilemap"
+            #direction = image[0]
+            #if direction == 'r':
+            #    x += zoom_x_size
+            #if direction == 'd':
+            #    y += zoom_y_size
+            #    # Don't forget to "carriage return" after a down shift
+            #    x = zoom_xoffset
+
+        LOGGER.info("\tGenerating output file tilemap")
 
         output_tilemap = []
         temp_x = 0
         temp_y = 0
         for tile in range(0, int(tiles_for_zoom)):
-            print "Generating collisions for tile %d at (%d, %d -> %d, %d)" % (tile, temp_x, temp_y, temp_x+tilesize, temp_y+tilesize)
+            LOGGER.debug("\t\tGenerating collisions for tile %d at (%d, %d -> %d, %d)", tile, temp_x, temp_y, temp_x+tilesize, temp_y+tilesize)
             tile = []
             for input_tile in input_tilemap:
-                print "Attempting to collide boxes"
+                #print "Attempting to collide boxes"
                 box_x = temp_x if temp_x > input_tile[1] else input_tile[1]
                 box_y = temp_y if temp_y > input_tile[2] else input_tile[2]
                 box_x_final = temp_x + tilesize if temp_x + tilesize < input_tile[3] else input_tile[3]
                 box_y_final = temp_y + tilesize if temp_y + tilesize < input_tile[4] else input_tile[4]
                 # Detect if the collision yields a valid bounding box
                 if(box_x >= 0 and box_y >= 0 and box_x_final > box_x and box_y_final > box_y):
-                    print "Collision detected with input tile at %d x %d -> %d x %d" % (input_tile[1], input_tile[2], input_tile[3], input_tile[4])
-                    print "Bounding box of collision area %d x %d -> %d x %d" % (box_x, box_y, box_x_final, box_y_final)
+                    LOGGER.debug("\t\t\tCollision detected with input tile at %d x %d -> %d x %d", input_tile[1], input_tile[2], input_tile[3], input_tile[4])
+                    LOGGER.debug("\t\t\tBounding box of collision area %d x %d -> %d x %d", box_x, box_y, box_x_final, box_y_final)
 
                     # Now translate these directly into relative coordinates for PIL
                     # Note we've kept everything as floats up to here, but Python makes rounding errors instead of doing the right thing (yay floats!)
@@ -173,8 +188,8 @@ def tile(tilesize, imagelist, prefix, debug, crop):
                     output_start_x = int((box_x) - (temp_x))
                     output_start_y = int((box_y) - (temp_y))
                     
-                    print "Will copy from %d x %d -> %d x %d" % (input_start_x, input_start_y, input_stop_x, input_stop_y)
-                    print "Will paste to %d x %d" % (output_start_x, output_start_y)
+                    LOGGER.debug("\t\t\tWill copy from %d x %d -> %d x %d", input_start_x, input_start_y, input_stop_x, input_stop_y)
+                    LOGGER.debug("\t\t\tWill paste to %d x %d", output_start_x, output_start_y)
                     tile.append([input_tile[0], input_start_x, input_start_y, input_stop_x, input_stop_y, output_start_x, output_start_y])
 
             output_tilemap.append([None, temp_x / tilesize, temp_y / tilesize, tile])
@@ -185,52 +200,73 @@ def tile(tilesize, imagelist, prefix, debug, crop):
             else:
                 temp_x += tilesize
 
-        print "Performing output tile generation"
+        LOGGER.info("\tPerforming output tile generation")
 
-        for image in imagelist:
-            print "Loading image %s" % image[1]
-            # Convert to RGB 
-            im = Image.open(image[1]).convert('RGB')
-            if(crop):
-                im = im.crop((crop[0], crop[1], crop[2], crop[3]))
-            if(debug):
-                quality = Image.NEAREST
+        tiles_generated = 0
+
+        for image in config['images']:
+            LOGGER.info("\t\tProcessing image '%s'", image['name'])
+
+            LOGGER.info("\t\t\tLoading image")
+
+            # If we have a filename load it and resize it
+            if 'file' in image:
+                LOGGER.info("\t\t\t\tfrom file '%s'", image['file'])
+                # Convert to RGB
+                im = Image.open(image['file']).convert('RGB')
+                if(crop):
+                    im = im.crop((crop[0], crop[1], crop[2], crop[3]))
+                if(debug):
+                    quality = Image.NEAREST
+                else:
+                    quality = Image.ANTIALIAS
+                small_im = im.resize((int(zoom_x_size), int(zoom_y_size)), quality)
+
+            # If we don't have a filename, create a blank image to cut pieces out of
             else:
-                quality = Image.ANTIALIAS
-            im = im.resize((int(zoom_x_size), int(zoom_y_size)), quality)
-            print "Image mode %s" % im.mode
+                LOGGER.info("\t\t\t\tusing blank image")
+                small_im = Image.new('RGBA', (int(zoom_x_size), int(zoom_y_size)), (255, 0, 0, 0))
+
+            #print "\t\tImage mode %s" % im.mode
             # Loop over output tiles
-            for output_tile in output_tilemap:
+            def process_tiles(output_tile):
                 # Loop over their pending operations
                 for operation in output_tile[3]:
                     # If an operation matches our image
-                    if operation and operation[0] == image[1]:
-                        print "Found an operation matching image in tile %d x %d" % (output_tile[1], output_tile[2])
+                    if operation and operation[0] == image['name']:
+                        LOGGER.debug("\t\t\tFound an operation matching image in tile %d x %d", output_tile[1], output_tile[2])
                         # If the image hasn't been created yet
                         if(output_tile[0] == None):
-                            print "Output tile was missing. Created."
+                            LOGGER.debug("\t\t\tOutput tile was missing. Created.")
                             output_tile[0] = Image.new('RGBA', (tilesize, tilesize), (255, 0, 0, 0))
                         # Perform the tile transfer
-                        output_tile[0].paste(im.crop((operation[1], operation[2], operation[3], operation[4])), (operation[5], operation[6]))
+                        output_tile[0].paste(small_im.crop((operation[1], operation[2], operation[3], operation[4])), (operation[5], operation[6]))
                         # Delete the operation we just did
-                        print "Before screwing up the operations we had %s" % ','.join(map(str,output_tile[3]))
+                        #print "Before screwing up the operations we had %s" % ','.join(map(str, output_tile[3]))
                         output_tile[3].remove(operation)
-                        print "After we had %s" % ','.join(map(str,output_tile[3]))
+                        #print "After we had %s" % ','.join(map(str,output_tile[3]))
                 # If all operations have been completed
                 if output_tile[0] and len(output_tile[3]) == 0:
-                    print "Found a completed tile, saving tile %d x %d" % (output_tile[1], output_tile[2])
+                    LOGGER.debug("\t\t\tFound a completed tile, saving tile %d x %d", output_tile[1], output_tile[2])
                     if not os.path.exists("%s/%d/%d" % (prefix, zoom, output_tile[1])):
                         os.makedirs("%s/%d/%d" % (prefix, zoom, output_tile[1]))
                     # If its a totally blank tile let's make it now to save ourselves
                     if(output_tile[0] == None):
-                        print "Output tile was missing. Created."
+                        LOGGER.debug("\t\t\tOutput tile was missing. Created.")
                         output_tile[0] = Image.new('RGBA', (tilesize, tilesize), (255, 0, 0, 0))
                     output_tile[0].save("%s/%d/%d/%d.png" % (prefix, zoom, output_tile[1], output_tile[2]))
                     # Delete the image and stop us from trying to save it again
                     output_tile[0] = False
 
+            LOGGER.info("\t\t\tProcessing tiles")
+
+            # Despite process_tiles being lock heavy, it does enough heavy I/O and compression lifting this provides a
+            # major speed up.
+            with futures.ThreadPoolExecutor(max_workers=10) as executor:
+                executor.map(process_tiles, output_tilemap)
+
 def write_settings(max, size, prefix):
-    print "Writing map settings configuration..."
+    print("Writing map settings configuration...")
     output = {}
     output['max'] = max
     output['size'] = size
@@ -243,17 +279,15 @@ def write_settings(max, size, prefix):
 
 def main(argv=sys.argv):
     parser = argparse.ArgumentParser(description="Tile a set of input images for OpenLayers or Google Maps")
-    parser.add_argument('--imagecfg', metavar='file', type=argparse.FileType('r'), dest='configfile', required=True, help='configuration file containing position of source images')
+    parser.add_argument('--config', metavar='file', type=argparse.FileType('r'), dest='config_file', required=True, help='configuration file containing position of source images')
     parser.add_argument('--destination', metavar='path', dest='prefix', required=True, help='location to save generated tiles (will be created if it does not exist)')
     parser.add_argument('--draft', action='store_true', dest='debug', help='Lower resize quality for faster image production. Good for testing tiling')
     args = parser.parse_args()
     imagelist = []
-    for line in args.configfile:
-        split = line.split(',')
-        imagelist.append((split[1].rstrip(), split[0]))
+    config = yaml.load(args.config_file)
     #crop = (1206, 522, 11180, 14000)
     crop = False
-    tile(256, imagelist, args.prefix, args.debug, crop)
+    tile(256, config, args.prefix, args.debug, crop)
 
 if __name__ == "__main__":
     sys.exit(main())
