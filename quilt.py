@@ -42,7 +42,7 @@ def tile(tilesize, imagelist, prefix, debug, crop):
     if(crop):
         im = im.crop((crop[0], crop[1], crop[2], crop[3]))
     size = im.size
-    
+
     # Free the image for GC
     del im
 
@@ -209,7 +209,7 @@ def tile(tilesize, imagelist, prefix, debug, crop):
                         # If the image hasn't been created yet
                         if(output_tile[0] == None):
                             print "Output tile was missing. Created."
-                            output_tile[0] = Image.new('RGB', (tilesize, tilesize), (255,)*4)
+                            output_tile[0] = Image.new('RGBA', (tilesize, tilesize), (255, 0, 0, 0))
                         # Perform the tile transfer
                         output_tile[0].paste(im.crop((operation[1], operation[2], operation[3], operation[4])), (operation[5], operation[6]))
                         # Delete the operation we just did
@@ -224,8 +224,8 @@ def tile(tilesize, imagelist, prefix, debug, crop):
                     # If its a totally blank tile let's make it now to save ourselves
                     if(output_tile[0] == None):
                         print "Output tile was missing. Created."
-                        output_tile[0] = Image.new('RGB', (tilesize, tilesize), (255,)*4)
-                    output_tile[0].save("%s/%d/%d/%d.jpg" % (prefix, zoom, output_tile[1], output_tile[2]))
+                        output_tile[0] = Image.new('RGBA', (tilesize, tilesize), (255, 0, 0, 0))
+                    output_tile[0].save("%s/%d/%d/%d.png" % (prefix, zoom, output_tile[1], output_tile[2]))
                     # Delete the image and stop us from trying to save it again
                     output_tile[0] = False
 
