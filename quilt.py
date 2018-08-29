@@ -6,7 +6,7 @@ Quilt.
 
 Image tiler for OpenLayers and Google Maps designed for large input sets
 
-Copyright (C) 2012, 2017 Eric Harmon
+Copyright (C) 2012, 2017-2018 Eric Harmon
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -121,7 +121,12 @@ class OutputTile(object):
             LOGGER.debug("%s: Saving tile", self)
             location = "%s/%d/%d/%d.png" % (self.prefix, self.zoom_level, self.tile_location[0], self.tile_location[1])
             if not os.path.exists(os.path.dirname(location)):
-                os.makedirs(os.path.dirname(location))
+                try:
+                    os.makedirs(os.path.dirname(location))
+                except OSError as err:
+                    # Ignore directory creation collision when running in parralel
+                    if err.errno != 17:
+                        raise
             self._image.save(location)
 
         # Unset the image data so garbage collect can do it's thing
@@ -448,7 +453,11 @@ def tile(tile_size, config, prefix, debug, crop):
             # Clean up the resized copy early so we don't have it temporarily loaded twice when we come around the loop
             small_im = None
 
+        LOGGER.info("\tDone with image '%s'.", image.name)
+
     # TODO: After this we need a pass to finalize all images so the completely blank ones get written
+
+    LOGGER.info("Done processing tiles.")
 
 
 def write_settings(max, size, prefix):
