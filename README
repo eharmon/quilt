@@ -8,7 +8,8 @@ Requirements
 
 Quilt uses Python, specifically the (generally included) modules: sys, os, math, argparse, json.
 
-Additionally Quilt requires PIL: http://www.pythonware.com/products/pil/
+As specified in the requirements.txt, Quilt relies on Pillow-SIMD, the SIMD accelerated fork of Pillow. Installing this may require some support libraries on your system, see: https://pillow.readthedocs.io/en/latest/installation.html#building-from-source
+The equivalent version of Pillow can be substituted on non-x86 platforms with reduced performance.
 
 Usage
 =====

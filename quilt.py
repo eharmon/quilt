@@ -92,7 +92,8 @@ class OutputTile(object):
         LOGGER.debug("%s: Adding image data for image '%s'", self, operation.input_image.name)
         if not self._image:
             LOGGER.debug("%s: Created blank output tile", self)
-            self._image = Image.new('RGBA', (self.tile_size, self.tile_size), (255, 0, 0, 0))
+            # No color, this will leave the sections which haven't been copied into transparent
+            self._image = Image.new('RGBA', (self.tile_size, self.tile_size), color=None)
 
         # If image_data is None, we're being asked to create a blank tile, so just continue without copying anything
         if image_data is not None:
@@ -119,6 +120,21 @@ class OutputTile(object):
 
         if self._image:
             LOGGER.debug("%s: Saving tile", self)
+
+            # If the image has no transparent regions (the bounding box matches the tile size), drop transparency to save space
+            box = self._image.getbbox()
+            if box and box[0] == 0 and box[1] == 0 and box[2] == self.tile_size and box[3] == self.tile_size:
+                self._image = self._image.convert('RGB')
+
+            # If we have less than 256 colors, quantizing down to 256 is free, so go ahead and do it
+            colors = self._image.getcolors()
+            if colors:
+                # If the image is totally transparent, don't write out anything
+                #if len(colors) == 1 and colors[0][1] == (0, 0, 0, 0):
+                #    self._image = None
+                #    return
+                self._image = self._image.quantize()
+
             location = "%s/%d/%d/%d.png" % (self.prefix, self.zoom_level, self.tile_location[0], self.tile_location[1])
             if not os.path.exists(os.path.dirname(location)):
                 try:
@@ -127,7 +143,13 @@ class OutputTile(object):
                     # Ignore directory creation collision when running in parralel
                     if err.errno != 17:
                         raise
-            self._image.save(location)
+            # If we've only got one color, reduce the bit depth for the pallette to save space
+            if colors and len(colors) == 1:
+                bits = 1
+            else:
+                bits = 0
+            # Save with optimization. Worth the slowness for the reduced file sizes.
+            self._image.save(location, optimize=True, bits=bits)
 
         # Unset the image data so garbage collect can do it's thing
         self._image = None
@@ -288,7 +310,7 @@ def tile(tile_size, config, prefix, debug, crop):
     size = im.size
 
     # Free the image for GC
-    del im
+    #del im
 
     output_data = OutputData(
         (config['width'], config['height']),
@@ -297,7 +319,7 @@ def tile(tile_size, config, prefix, debug, crop):
     )
 
     canvas_size = output_data.zoom(output_data.maximum_zoom).tiles_per_side * output_data.tile_size
-    write_settings(output_data.maximum_zoom - 1, canvas_size, prefix)
+    write_settings(config['name'], output_data.maximum_zoom - 1, canvas_size, tile_size, prefix)
 
     LOGGER.info("Building input image data...")
     images = []
@@ -370,7 +392,7 @@ def tile(tile_size, config, prefix, debug, crop):
                         input_stop_y += 1
                     output_start_x = int((box_x) - (tile_x))
                     output_start_y = int((box_y) - (tile_y))
-                    
+
                     LOGGER.debug("\t\t\tWill copy from %d x %d -> %d x %d", input_start_x, input_start_y, input_stop_x, input_stop_y)
                     LOGGER.debug("\t\t\tWill paste to %d x %d", output_start_x, output_start_y)
 
@@ -421,12 +443,24 @@ def tile(tile_size, config, prefix, debug, crop):
             # We can do a cheap resize since the pixels are already uniform
             quality = Image.NEAREST
 
-        for zoom in range(0, output_data.maximum_zoom):
+        def resize_image(zoom):
+            # TODO: We sure generate zoom_data a bunch of times...we should do it once up front and cache
+            zoom_data = output_data.zoom(zoom)
+            return im.resize(zoom_data.input_size, quality)
+
+        # Perform the resies in parallel
+        #LOGGER.info("\t\tCaching resized images...")
+        # TODO: We should automatically calculate the max_workers based on CPUs
+        #with futures.ThreadPoolExecutor(max_workers=4) as executor:
+        #    resized_im = list(executor.map(resize_image, range(output_data.maximum_zoom)))
+
+        for zoom in range(output_data.maximum_zoom):
             LOGGER.info("\t\tProcessing zoom level %d", zoom)
             zoom_data = output_data.zoom(zoom)
 
             LOGGER.info("\t\t\tResizing input image...")
             small_im = im.resize(zoom_data.input_size, quality)
+            #small_im = resized_im[zoom]
 
             # Loop over output tiles
             def process_tiles(output_tile):
@@ -460,11 +494,13 @@ def tile(tile_size, config, prefix, debug, crop):
     LOGGER.info("Done processing tiles.")
 
 
-def write_settings(max, size, prefix):
+def write_settings(title, max, size, tile_size, prefix):
     print("Writing map settings configuration...")
     output = {
         'max': max,
         'size': size,
+        'tile_size': tile_size,
+        'title': title,
     }
     json_output = json.dumps(output)
     if not os.path.exists("%s" % prefix):
