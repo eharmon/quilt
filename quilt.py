@@ -33,6 +33,8 @@ import os
 import sys
 import warnings
 
+import colorcorrect.algorithm as ccalgo
+from colorcorrect.util import from_pil, to_pil
 from concurrent import futures
 from PIL import Image
 import yaml
@@ -60,6 +62,8 @@ class OutputTile(object):
         self._image = None
 
         self.tile_complete = False
+
+        self._has_transparency = False
 
     def __repr__(self):
         return "<tile %d/%d/%d>" % (self.zoom_level, self.tile_location[0], self.tile_location[1])
@@ -99,6 +103,9 @@ class OutputTile(object):
         if image_data is not None:
             LOGGER.debug("%s: Copied data from image '%s' to output tile", self, operation.input_image.name)
             self._image.paste(image_data.crop(operation.input_location), operation.output_location)
+            # If we were asked to copy RGBA, just assume we might have transparency
+            if image_data.mode == 'RGBA':
+                self._has_transparency = True
 
         LOGGER.debug("%s: Trying to remove operation", self)
         self.remove_operation(operation)
@@ -121,9 +128,9 @@ class OutputTile(object):
         if self._image:
             LOGGER.debug("%s: Saving tile", self)
 
-            # If the image has no transparent regions (the bounding box matches the tile size), drop transparency to save space
+            # If the image has no transparent regions (the bounding box matches the tile size and we didn't copy in any transparent data), drop transparency to save space
             box = self._image.getbbox()
-            if box and box[0] == 0 and box[1] == 0 and box[2] == self.tile_size and box[3] == self.tile_size:
+            if not self._has_transparency and box and box[0] == 0 and box[1] == 0 and box[2] == self.tile_size and box[3] == self.tile_size:
                 self._image = self._image.convert('RGB')
 
             # If we have less than 256 colors, quantizing down to 256 is free, so go ahead and do it
@@ -294,7 +301,7 @@ class ZoomData(object):
         return x, y
 
 
-def tile(tile_size, config, prefix, debug, crop):
+def tile(tile_size, config, prefix, debug, crop, color_correct):
     """
     Generate a list of tiles given a list of images and metadata.
     """
@@ -319,7 +326,7 @@ def tile(tile_size, config, prefix, debug, crop):
     )
 
     canvas_size = output_data.zoom(output_data.maximum_zoom).tiles_per_side * output_data.tile_size
-    write_settings(config['name'], output_data.maximum_zoom - 1, canvas_size, tile_size, prefix)
+    write_settings(config['name'], config['attribution'], output_data.maximum_zoom - 1, canvas_size, tile_size, prefix)
 
     LOGGER.info("Building input image data...")
     images = []
@@ -436,6 +443,11 @@ def tile(tile_size, config, prefix, debug, crop):
             else:
                 quality = Image.LANCZOS
 
+            if color_correct:
+                LOGGER.info("\t\tColor correcting image...")
+                # TODO: retinex_adjust seems to give a blue cast, and more robust algorithms crash in the colorcorrect module
+                im = to_pil(ccalgo.retinex_adjust(from_pil(im)))
+
         # If we don't have a filename, create a blank image to cut pieces out of
         else:
             LOGGER.info("\t\t\tusing blank image.")
@@ -494,13 +506,14 @@ def tile(tile_size, config, prefix, debug, crop):
     LOGGER.info("Done processing tiles.")
 
 
-def write_settings(title, max, size, tile_size, prefix):
+def write_settings(title, attribution, max, size, tile_size, prefix):
     print("Writing map settings configuration...")
     output = {
         'max': max,
         'size': size,
         'tile_size': tile_size,
         'title': title,
+        'attribution': attribution,
     }
     json_output = json.dumps(output)
     if not os.path.exists("%s" % prefix):
@@ -515,12 +528,13 @@ def main():
     parser.add_argument('--config', metavar='file', type=argparse.FileType('r'), dest='config_file', required=True, help='configuration file containing position of source images')
     parser.add_argument('--destination', metavar='path', dest='prefix', required=True, help='location to save generated tiles (will be created if it does not exist)')
     parser.add_argument('--draft', action='store_true', dest='debug', help='Lower resize quality for faster image production. Good for testing tiling')
+    parser.add_argument('--color-correct', action='store_true', help='Attempt to color correct input maps')
     #parser.add_argument('--parallel', metavar='images', help="Number of input images to process in parallel. Greatly increases memory usage for large input images.")
     args = parser.parse_args()
     config = yaml.load(args.config_file)
     #crop = (1206, 522, 11180, 14000)
     crop = False
-    tile(256, config, args.prefix, args.debug, crop)
+    tile(256, config, args.prefix, args.debug, crop, args.color_correct)
 
 
 if __name__ == "__main__":
